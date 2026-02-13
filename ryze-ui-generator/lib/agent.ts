@@ -1,6 +1,6 @@
 // ============================================
 // AI AGENT SYSTEM
-// Multi-step reasoning: Planner → Generator → Explainer
+// Planner → Generator → Explainer (Production Safe)
 // ============================================
 
 export interface PlanStep {
@@ -29,231 +29,288 @@ export interface AgentResult {
 // ============================================
 // STEP 1: PLANNER
 // ============================================
-export const PLANNER_PROMPT = `You are a UI planner. Your job is to analyze user intent and create a structured plan.
+
+export const PLANNER_PROMPT = `You are a UI planner.
 
 RULES:
-1. You can ONLY use these components: Button, Card, Input, Table, Modal, Sidebar, Navbar, Chart
-2. NO inline styles, NO custom CSS, NO new components
-3. Output ONLY valid JSON
-
-Analyze the user's request and output a JSON plan with this structure:
-{
-  "layout": "describe the overall layout structure",
-  "components": ["list", "of", "component", "names"],
-  "reasoning": "explain why this layout and these components"
-}
+1. Allowed components only:
+Button, Card, Input, Table, Modal, Sidebar, Navbar, Chart
+2. No custom CSS
+3. Output JSON only
 
 User Request: {userIntent}
+Current Code: {currentCode}
 
-Current Code (if editing): {currentCode}
-
-Output ONLY the JSON, nothing else.`;
+Output:
+{
+  "layout": "",
+  "components": [],
+  "reasoning": ""
+}
+`;
 
 // ============================================
-// STEP 2: GENERATOR
+// STEP 2: GENERATOR (Production Safe)
 // ============================================
-export const GENERATOR_PROMPT = `You are a UI code generator. Convert the plan into React code.
+
+export const GENERATOR_PROMPT = `
+You are a strict React UI generator for Ryze.
+
+Your code runs inside a sandbox preview.
+If the code crashes, the preview will fail.
 
 STRICT RULES:
-1. ONLY use these components: Button, Card, Input, Table, Modal, Sidebar, Navbar, Chart
-2. Import them from './ComponentLibrary'
-3. NO inline styles, NO style prop, NO className except those built into components
-4. NO creating new components
-5. Use React hooks (useState, etc.) as needed
-6. Return a VALID React functional component
 
-ALLOWED COMPONENTS AND THEIR PROPS:
+IMPORTS (exactly):
 
-Button:
-- children, onClick, variant ('primary'|'secondary'|'danger'|'ghost'), size ('small'|'medium'|'large'), disabled
+import React, { useState, useEffect } from 'react';
+import { Button, Card, Input, Table, Modal, Sidebar, Navbar, Chart } from '@/components/ComponentLibrary';
 
-Card:
-- children, title, subtitle, footer, variant ('default'|'elevated'|'bordered')
+COMPONENT:
 
-Input:
-- label, placeholder, type ('text'|'email'|'password'|'number'), value, onChange, error, disabled
+export default function GeneratedUI() {
+  return (...);
+}
 
-Table:
-- headers (string[]), rows (string[][]), striped (boolean)
+SAFETY RULES:
 
-Modal:
-- isOpen, onClose, title, children, footer
+1. Allowed components only:
+Button, Card, Input, Table, Modal, Sidebar, Navbar, Chart
 
-Sidebar:
-- isOpen, items (Array<{icon: string, label: string, id: string}>), onItemClick
+2. children must be:
+- string
+- JSX
+- array
+NEVER plain object
 
-Navbar:
-- title, items (Array<{label: string, onClick}>), onMenuClick
+WRONG:
+<Card>{ {text:"Hi"} }</Card>
 
-Chart:
-- type ('line'|'bar'), data (any[]), xKey, yKey, title
+CORRECT:
+<Card>Hi</Card>
+
+3. ReactNode props must NOT receive objects:
+- children
+- footer
+- title
+- subtitle
+
+Correct:
+<Card footer={<Button>Save</Button>} />
+
+4. Always return a single root element.
+
+5. When mapping arrays → always add key.
+
+6. No inline styles.
+No custom className.
+
+7. Chart data must be array:
+const data = [{ name:"Jan", value:100 }]
+
+8. Sidebar items format:
+[{ id:'home', label:'Home', icon:'home' }]
+
+9. Navbar items format:
+[{ label:'Home', onClick:()=>{} }]
+
+OUTPUT RULES:
+
+- ONLY React code
+- No markdown
+- No backticks
+- No explanation
+- No comments
 
 PLAN:
 {plan}
 
-Current Code (if modifying): {currentCode}
-
-IMPORTANT: 
-- If modifying existing code, make MINIMAL changes
-- Preserve existing functionality
-- Only change what the user requested
-- Keep the same component instances where possible
-
-Output ONLY the complete React component code, starting with imports. No explanations, no markdown.`;
+Current Code:
+{currentCode}
+`;
 
 // ============================================
 // STEP 3: EXPLAINER
 // ============================================
-export const EXPLAINER_PROMPT = `You are a UI decision explainer. Explain what was done and why.
+
+export const EXPLAINER_PROMPT = `Explain the UI decisions.
 
 PLAN: {plan}
-GENERATED CODE: {code}
+CODE: {code}
 
-Analyze the plan and code, then output a JSON with this structure:
+Return JSON:
 {
-  "decisions": ["key decision 1", "key decision 2", ...],
-  "componentChoices": "explain which components were chosen and why",
-  "layoutRationale": "explain the overall layout strategy"
+  "decisions": [],
+  "componentChoices": "",
+  "layoutRationale": ""
 }
-
-Output ONLY the JSON, nothing else.`;
+`;
 
 // ============================================
 // AGENT ORCHESTRATOR
 // ============================================
+
 export async function runAgent(
   userIntent: string,
-  currentCode: string = '',
+  currentCode: string = "",
   apiKey: string
 ): Promise<AgentResult> {
-  
-  // STEP 1: PLANNER
-  console.log('🧠 Running Planner...');
+
+  // ---------- Planner ----------
   const plannerPrompt = PLANNER_PROMPT
-    .replace('{userIntent}', userIntent)
-    .replace('{currentCode}', currentCode || 'None - generating from scratch');
-  
+    .replace("{userIntent}", userIntent)
+    .replace("{currentCode}", currentCode || "None");
+
   const planResponse = await callClaude(plannerPrompt, apiKey);
   const plan: PlanStep = JSON.parse(cleanJsonResponse(planResponse));
-  
-  console.log('✅ Plan created:', plan);
-  
-  // STEP 2: GENERATOR
-  console.log('🔧 Running Generator...');
+
+  // ---------- Generator ----------
   const generatorPrompt = GENERATOR_PROMPT
-    .replace('{plan}', JSON.stringify(plan, null, 2))
-    .replace('{currentCode}', currentCode || 'None - generating from scratch');
-  
-  const codeResponse = await callClaude(generatorPrompt, apiKey);
-  const code = codeResponse.trim();
-  
-  // Extract component usage from code
+    .replace("{plan}", JSON.stringify(plan, null, 2))
+    .replace("{currentCode}", currentCode || "None");
+
+  let codeResponse = await callClaude(generatorPrompt, apiKey);
+  let code = sanitizeCode(codeResponse);
+
   const componentUsage = extractComponentUsage(code);
-  
-  console.log('✅ Code generated, components used:', componentUsage);
-  
-  // Validate components
   validateComponents(componentUsage);
-  
-  // STEP 3: EXPLAINER
-  console.log('📝 Running Explainer...');
+
+  // ---------- Explainer ----------
   const explainerPrompt = EXPLAINER_PROMPT
-    .replace('{plan}', JSON.stringify(plan, null, 2))
-    .replace('{code}', code);
-  
+    .replace("{plan}", JSON.stringify(plan, null, 2))
+    .replace("{code}", code);
+
   const explanationResponse = await callClaude(explainerPrompt, apiKey);
-  const explanation: Explanation = JSON.parse(cleanJsonResponse(explanationResponse));
-  
-  console.log('✅ Explanation generated');
-  
+  const explanation: Explanation = JSON.parse(
+    cleanJsonResponse(explanationResponse)
+  );
+
   return {
     plan,
     code: {
       code,
-      componentUsage
+      componentUsage,
     },
-    explanation
+    explanation,
   };
 }
 
 // ============================================
-// HELPER FUNCTIONS
+// API CALL
 // ============================================
 
 async function callClaude(prompt: string, apiKey: string): Promise<string> {
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01'
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: "claude-sonnet-4-20250514",
       max_tokens: 4000,
-      messages: [
-        {
-          role: 'user',
-          content: prompt
-        }
-      ]
-    })
+      temperature: 0.2,
+      messages: [{ role: "user", content: prompt }],
+    }),
   });
-  
+
   if (!response.ok) {
     throw new Error(`Claude API error: ${response.statusText}`);
   }
-  
+
   const data = await response.json();
   return data.content[0].text;
 }
 
-function cleanJsonResponse(response: string): string {
-  // Remove markdown code blocks if present
-  let cleaned = response.trim();
-  if (cleaned.startsWith('```json')) {
-    cleaned = cleaned.replace(/^```json\n/, '').replace(/\n```$/, '');
-  } else if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```\n/, '').replace(/\n```$/, '');
+// ============================================
+// CLEAN / SANITIZE AI CODE
+// ============================================
+
+function sanitizeCode(response: string): string {
+  let code = response.trim();
+
+  // Remove markdown
+  if (code.startsWith("```")) {
+    code = code.replace(/^```[a-z]*\n/, "").replace(/\n```$/, "");
   }
-  return cleaned.trim();
+
+  // Ensure default export exists
+  if (!code.includes("export default")) {
+    code += "\nexport default GeneratedUI;";
+  }
+
+  return code;
 }
 
-function extractComponentUsage(code: string): string[] {
-  const allowedComponents = ['Button', 'Card', 'Input', 'Table', 'Modal', 'Sidebar', 'Navbar', 'Chart'];
-  const used: Set<string> = new Set();
-  
-  for (const component of allowedComponents) {
-    // Check if component is used in JSX
-    const regex = new RegExp(`<${component}[\\s>]`, 'g');
-    if (regex.test(code)) {
-      used.add(component);
-    }
+function cleanJsonResponse(response: string): string {
+  let cleaned = response.trim();
+  if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/^```json?\n/, "").replace(/\n```$/, "");
   }
-  
+  return cleaned;
+}
+
+// ============================================
+// VALIDATION
+// ============================================
+
+function extractComponentUsage(code: string): string[] {
+  const allowed = [
+    "Button",
+    "Card",
+    "Input",
+    "Table",
+    "Modal",
+    "Sidebar",
+    "Navbar",
+    "Chart",
+  ];
+
+  const used = new Set<string>();
+
+  for (const comp of allowed) {
+    const regex = new RegExp(`<${comp}[\\s>]`, "g");
+    if (regex.test(code)) used.add(comp);
+  }
+
   return Array.from(used);
 }
 
-function validateComponents(componentUsage: string[]): void {
-  const allowedComponents = ['Button', 'Card', 'Input', 'Table', 'Modal', 'Sidebar', 'Navbar', 'Chart'];
-  
-  for (const component of componentUsage) {
-    if (!allowedComponents.includes(component)) {
-      throw new Error(`Invalid component used: ${component}. Only allowed: ${allowedComponents.join(', ')}`);
+function validateComponents(usage: string[]) {
+  const allowed = [
+    "Button",
+    "Card",
+    "Input",
+    "Table",
+    "Modal",
+    "Sidebar",
+    "Navbar",
+    "Chart",
+  ];
+
+  for (const c of usage) {
+    if (!allowed.includes(c)) {
+      throw new Error(`Invalid component: ${c}`);
     }
   }
 }
 
 // ============================================
-// MODIFICATION DETECTOR
-// For incremental edits
+// EDIT DETECTOR
 // ============================================
+
 export function isIncrementalEdit(userIntent: string): boolean {
-  const incrementalKeywords = [
-    'change', 'modify', 'update', 'add', 'remove', 'delete',
-    'make it', 'adjust', 'fix', 'alter', 'edit', 'replace'
+  const words = [
+    "change",
+    "modify",
+    "update",
+    "add",
+    "remove",
+    "delete",
+    "edit",
+    "fix",
   ];
-  
-  const intent = userIntent.toLowerCase();
-  return incrementalKeywords.some(keyword => intent.includes(keyword));
+  const text = userIntent.toLowerCase();
+  return words.some((w) => text.includes(w));
 }

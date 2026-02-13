@@ -17,239 +17,207 @@ interface AgentResult {
   };
 }
 
-const PLANNER_PROMPT = `You are a UI planner. Your job is to analyze user intent and create a structured plan.
+/* =========================
+   PROMPTS
+========================= */
+
+const PLANNER_PROMPT = `You are a UI planner.
 
 RULES:
-1. You can ONLY use these components: Button, Card, Input, Table, Modal, Sidebar, Navbar, Chart
-2. NO inline styles, NO custom CSS, NO new components
-3. Output ONLY valid JSON
-
-Analyze the user's request and output a JSON plan with this structure:
-{
-  "layout": "describe the overall layout structure",
-  "components": ["list", "of", "component", "names"],
-  "reasoning": "explain why this layout and these components"
-}
+1. Only use components: Button, Card, Input, Table, Modal, Sidebar, Navbar, Chart
+2. Output ONLY valid JSON
 
 User Request: {userIntent}
+Current Code: {currentCode}
 
-Current Code (if editing): {currentCode}
+Return:
+{
+  "layout": "",
+  "components": [],
+  "reasoning": ""
+}`;
 
-Output ONLY the JSON, nothing else.`;
 
-const GENERATOR_PROMPT = `You are a UI code generator. Convert the plan into React code.
+const GENERATOR_PROMPT = `You are a React UI generator.
 
 STRICT RULES:
-1. ONLY use these components: Button, Card, Input, Table, Modal, Sidebar, Navbar, Chart
-2. Import them EXACTLY like this: import { Button, Card, Input } from '@/components/ComponentLibrary';
-3. NO inline styles, NO style prop, NO className except those built into components
-4. NO creating new components
-5. Use React hooks (useState, etc.) as needed
-6. Return a VALID React functional component
-7. Component must be named "GeneratedUI" and exported as default
+- Only use: Button, Card, Input, Table, Modal, Sidebar, Navbar, Chart
+- Import exactly:
+import { Button, Card, Input, Table, Modal, Sidebar, Navbar, Chart } from '@/components/ComponentLibrary';
+- No inline styles
+- No new components
+- Component name must be GeneratedUI
+- Export default GeneratedUI
 
-ALLOWED COMPONENTS AND THEIR PROPS:
-
-Button:
-- children, onClick, variant ('primary'|'secondary'|'danger'|'ghost'), size ('small'|'medium'|'large'), disabled
-
-Card:
-- children, title, subtitle, footer, variant ('default'|'elevated'|'bordered')
-
-Input:
-- label, placeholder, type ('text'|'email'|'password'|'number'), value, onChange, error, disabled
-
-Table:
-- headers (string[]), rows (string[][]), striped (boolean)
-
-Modal:
-- isOpen, onClose, title, children, footer
-
-Sidebar:
-- isOpen, items (Array<{icon: string, label: string, id: string}>), onItemClick
-
-Navbar:
-- title, items (Array<{label: string, onClick}>), onMenuClick
-
-Chart:
-- type ('line'|'bar'), data (any[]), xKey, yKey, title
+IMPORTANT DATA RULES:
+- title, subtitle, label must be strings
+- items arrays must contain plain objects
+- Sidebar icons must be strings ("home", "user", etc.)
+- DO NOT use JSX inside data objects
+- JSX allowed only inside component children
 
 PLAN:
 {plan}
 
-Current Code (if modifying): {currentCode}
+Current Code:
+{currentCode}
 
-IMPORTANT: 
-- If modifying existing code, make MINIMAL changes
-- Preserve existing functionality
-- Only change what the user requested
-- Keep the same component instances where possible
+Output ONLY the full component code.`;
 
-Output ONLY the complete React component code, starting with imports. No explanations, no markdown, no backticks.`;
 
-const EXPLAINER_PROMPT = `You are a UI decision explainer. Explain what was done and why.
+const EXPLAINER_PROMPT = `Explain the UI decisions.
 
 PLAN: {plan}
-GENERATED CODE: {code}
+CODE: {code}
 
-Analyze the plan and code, then output a JSON with this structure:
+Return JSON:
 {
-  "decisions": ["key decision 1", "key decision 2", "key decision 3"],
-  "componentChoices": "explain which components were chosen and why",
-  "layoutRationale": "explain the overall layout strategy"
-}
+  "decisions": [],
+  "componentChoices": "",
+  "layoutRationale": ""
+}`;
 
-Output ONLY the JSON, nothing else.`;
 
-async function callClaude(prompt: string, apiKey: string): Promise<string> {
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+/* =========================
+   AI CALL
+========================= */
+
+async function callAI(prompt: string, apiKey: string): Promise<string> {
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01'
+      Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: 'openai/gpt-oss-120b',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.4,
       max_tokens: 4000,
-      messages: [
-        {
-          role: 'user',
-          content: prompt
-        }
-      ]
-    })
+    }),
   });
 
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(`Claude API error: ${response.status} - ${JSON.stringify(errorData)}`);
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`AI Error: ${err}`);
   }
 
-  const data = await response.json();
-  return data.content[0].text;
+  const data = await res.json();
+  return data.choices[0].message.content;
 }
 
-function cleanJsonResponse(response: string): string {
-  let cleaned = response.trim();
-  if (cleaned.startsWith('```json')) {
-    cleaned = cleaned.replace(/^```json\n/, '').replace(/\n```$/, '');
-  } else if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```\n/, '').replace(/\n```$/, '');
+
+/* =========================
+   HELPERS
+========================= */
+
+function cleanResponse(text: string) {
+  let t = text.trim();
+  if (t.startsWith('```')) {
+    t = t.replace(/^```[a-z]*\n/, '').replace(/\n```$/, '');
   }
-  return cleaned.trim();
+  return t;
 }
 
 function extractComponentUsage(code: string): string[] {
-  const allowedComponents = ['Button', 'Card', 'Input', 'Table', 'Modal', 'Sidebar', 'Navbar', 'Chart'];
-  const used: Set<string> = new Set();
+  const allowed = [
+    'Button',
+    'Card',
+    'Input',
+    'Table',
+    'Modal',
+    'Sidebar',
+    'Navbar',
+    'Chart',
+  ];
 
-  for (const component of allowedComponents) {
-    const regex = new RegExp(`<${component}[\\s>]`, 'g');
-    if (regex.test(code)) {
-      used.add(component);
-    }
+  const used = new Set<string>();
+
+  for (const c of allowed) {
+    const regex = new RegExp(`<${c}[\\s>]`);
+    if (regex.test(code)) used.add(c);
   }
 
   return Array.from(used);
 }
 
-function validateComponents(componentUsage: string[]): void {
-  const allowedComponents = ['Button', 'Card', 'Input', 'Table', 'Modal', 'Sidebar', 'Navbar', 'Chart'];
+/**
+ * PRODUCTION SAFETY
+ * Instead of throwing error,
+ * this removes JSX from data fields
+ */
+function sanitizeGeneratedCode(code: string): string {
+  // Replace JSX used in label/title with strings
+  code = code.replace(/label:\s*<[^>]+>/g, 'label: "Item"');
+  code = code.replace(/title:\s*<[^>]+>/g, 'title: "Title"');
+  code = code.replace(/subtitle:\s*<[^>]+>/g, 'subtitle: "Subtitle"');
+  code = code.replace(/footer:\s*<[^>]+>/g, 'footer: "Footer"');
 
-  for (const component of componentUsage) {
-    if (!allowedComponents.includes(component)) {
-      throw new Error(`Invalid component used: ${component}. Only allowed: ${allowedComponents.join(', ')}`);
-    }
-  }
+  return code;
 }
 
-function isIncrementalEdit(userIntent: string): boolean {
-  const incrementalKeywords = [
-    'change', 'modify', 'update', 'add', 'remove', 'delete',
-    'make it', 'adjust', 'fix', 'alter', 'edit', 'replace'
-  ];
 
-  const intent = userIntent.toLowerCase();
-  return incrementalKeywords.some(keyword => intent.includes(keyword));
-}
+/* =========================
+   ROUTE
+========================= */
 
 export async function POST(req: NextRequest) {
   try {
     const { userIntent, currentCode, apiKey } = await req.json();
 
     if (!apiKey) {
-      return NextResponse.json({ error: 'API key is required' }, { status: 400 });
+      return NextResponse.json({ error: 'API key required' }, { status: 400 });
     }
 
     if (!userIntent) {
-      return NextResponse.json({ error: 'User intent is required' }, { status: 400 });
+      return NextResponse.json({ error: 'User intent required' }, { status: 400 });
     }
 
-    console.log('🧠 Starting agent for:', userIntent);
-
-    // Determine if this is an incremental edit
-    const isEdit = currentCode && isIncrementalEdit(userIntent);
-
-    // STEP 1: PLANNER
-    console.log('🧠 Running Planner...');
-    const plannerPrompt = PLANNER_PROMPT
+    /* -------- Step 1: Planner -------- */
+    const planPrompt = PLANNER_PROMPT
       .replace('{userIntent}', userIntent)
-      .replace('{currentCode}', currentCode || 'None - generating from scratch');
+      .replace('{currentCode}', currentCode || 'None');
 
-    const planResponse = await callClaude(plannerPrompt, apiKey);
-    const plan = JSON.parse(cleanJsonResponse(planResponse));
+    const planRaw = await callAI(planPrompt, apiKey);
+    const plan = JSON.parse(cleanResponse(planRaw));
 
-    console.log('✅ Plan created:', plan);
 
-    // STEP 2: GENERATOR
-    console.log('🔧 Running Generator...');
-    const generatorPrompt = GENERATOR_PROMPT
+    /* -------- Step 2: Generator -------- */
+    const genPrompt = GENERATOR_PROMPT
       .replace('{plan}', JSON.stringify(plan, null, 2))
-      .replace('{currentCode}', currentCode || 'None - generating from scratch');
+      .replace('{currentCode}', currentCode || 'None');
 
-    const codeResponse = await callClaude(generatorPrompt, apiKey);
-    let code = codeResponse.trim();
+    let code = cleanResponse(await callAI(genPrompt, apiKey));
 
-    // Clean up code if it has markdown
-    if (code.startsWith('```')) {
-      code = code.replace(/^```(?:tsx|typescript|jsx|javascript)?\n/, '').replace(/\n```$/, '');
-    }
+    // Sanitize AI mistakes (IMPORTANT)
+    code = sanitizeGeneratedCode(code);
 
-    // Extract component usage from code
     const componentUsage = extractComponentUsage(code);
 
-    console.log('✅ Code generated, components used:', componentUsage);
 
-    // Validate components
-    validateComponents(componentUsage);
-
-    // STEP 3: EXPLAINER
-    console.log('📝 Running Explainer...');
-    const explainerPrompt = EXPLAINER_PROMPT
-      .replace('{plan}', JSON.stringify(plan, null, 2))
+    /* -------- Step 3: Explainer -------- */
+    const explainPrompt = EXPLAINER_PROMPT
+      .replace('{plan}', JSON.stringify(plan))
       .replace('{code}', code);
 
-    const explanationResponse = await callClaude(explainerPrompt, apiKey);
-    const explanation = JSON.parse(cleanJsonResponse(explanationResponse));
+    const explanationRaw = await callAI(explainPrompt, apiKey);
+    const explanation = JSON.parse(cleanResponse(explanationRaw));
 
-    console.log('✅ Explanation generated');
 
     const result: AgentResult = {
       plan,
       code: {
         code,
-        componentUsage
+        componentUsage,
       },
-      explanation
+      explanation,
     };
 
     return NextResponse.json(result);
-
   } catch (error: any) {
-    console.error('❌ Agent error:', error);
+    console.error('Agent error:', error);
     return NextResponse.json(
-      { error: error.message || 'An error occurred during generation' },
+      { error: error.message || 'Generation failed' },
       { status: 500 }
     );
   }

@@ -2,11 +2,6 @@ import React from 'react';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { X, Menu, Settings, Home, User, Search, Bell } from 'lucide-react';
 
-// ============================================
-// FIXED COMPONENT LIBRARY
-// These components NEVER change
-// AI can only select, compose, and configure them
-// ============================================
 
 export const Button = ({ 
   children, 
